@@ -8,31 +8,104 @@
 		VectorTileSource,
 		JoinedData
 	} from 'svelte-maplibre';
+  import { Switch } from "$lib/components/ui/switch";
+	import * as Card from "$lib/components/ui/card"
 	import PopulationSelector from '../population_selector.svelte';
 	import { Chart, Svg, Axis, Spline } from 'layerchart';
+  import { Label } from "$lib/components/ui/label";
 	import proto from '../pb/synthpop_pb.js';
 
 	import { scaleTime } from 'd3-scale';
 	import { ticks } from 'd3-array';
 	import chroma from 'chroma-js';
 
-	let filters = $state([]);
 	let show_households = $state(true);
+	let day = $state(10);
+	let show_max = $state(false);
+	let selected_cell = $state(null);
 
 	let { data } = $props();
 	let { min, max, oas, grid, array, timesteps, times, global_trend } = data.prediction;
+
+	let selection_state = $state({
+		house_types:["1","2","3","4"],
+		tenure:["1","2","3","4","5"],
+		cardiovascular:[],
+		diabetes:[],
+		high_blood_pressure:[],
+		cars:[0,10],
+		occupants:[0,10],
+		rooms:[1,4],
+		bmi:[12,42],
+		age:[1,90],
+		no_medications:[0,10],
+		ethnicity:["1","2","3","4","5"],
+		sex:["1","2"],
+		self_assessed_health:["1","2","3","4","5"]
+	
+	})
+
 	let population = data.population;
 
 	let { households, people, AccommodationType } = population;
 
 	function apply_filters(households, people, filters) {
-		let filtered_pop = people;
-		let filtered_households = households;
+		let filtered_households = []
+		console.log("Filters ",filters)
+		console.log("Applying filters: houses ",filters.house_types, households[10])
+		console.log("household ", households[10])
+	  for (const house of households){
+				// if(!filters.house_types.includes(house.details.accommodationType.toString())){
+				// 	continue
+				// }		
+				// if(!filters.tenure.includes(house.details.tenure.toString())){
+				// 	continue
+				// }		
+				// if(house.details.cars < filters.cars[0] || house.details.cars >filters.cars[1]){
+				// 	continue 
+				// }		
+				// if(house.details.rooms < filters.rooms[0] || house.details.rooms>filters.rooms[1]){
+				// 	continue 
+				// }		
+				filtered_households.push(house)
+		}
+
+		console.log("Applying filters: people")
+	  let filtered_pop = []
+		console.log("person ",people[10])
+
+		for (const person of people){
+
+			if(person.health.bmi < filters.bmi[0] || person.health.bmi >filters.bmi[1]){
+				continue
+			}		
+
+			if(person.demographics.ageYears < filters.age[0] || person.demographics.ageYears > filters.age[1]){
+				continue 
+			}
+			if( !filters.ethnicity.includes(person.demographics.ethnicity.toString())){
+				continue 
+			}
+			if( !filters.sex.includes(person.demographics.sex.toString())){
+				continue
+			}
+			if(person.health.numberMedications < filters.no_medications[0] || person.health.numberMedications >filters.no_medications[1]){
+				continue 
+			}
+			if( !filters.self_assessed_health.includes(person.health.selfAssessedHealth.toString())){
+				continue 
+			}
+			filtered_pop.push(person)
+
+		}
+		console.log("filtered ", filtered_households.length, filtered_pop.length)
 		return { filtered_pop, filtered_households };
 	}
 
 	function calc_oa_stats(pop, households) {
+		console.log("Calculating stats")
 		let oa_stats = {};
+	
 		let pop_ids = new Set(pop.map((p) => p.id));
 		households.forEach((h) => {
 			let oa_id = h.oa11cd;
@@ -47,19 +120,18 @@
 				oa_stats[oa_id] = { people: unfiltered_people, households: 1 };
 			}
 		});
+		console.log("Done Calculating stats")
 		return Object.entries(oa_stats).map(([key, counts]) => ({ oa11cd: key, ...counts }));
 	}
 
-	let { filtered_pop, filtered_households } = $derived(apply_filters(households, people, filters));
+	let { filtered_pop, filtered_households } = $derived(apply_filters(households, people, selection_state));
 
 	let oa_stats = $derived(calc_oa_stats(filtered_pop, filtered_households));
-	console.log('oa stats ', oa_stats);
 
-	let day = $state(10);
-	let show_max = $state(false);
-	let selected_cell = $state(null);
+
 	let extent = $derived(
 		(() => {
+			console.log("Calculating extent")
 			if (show_max) {
 				let d_temps = grid.features.map((f) => f.properties.max);
 				return [Math.min(...d_temps), Math.max(...d_temps)];
@@ -67,21 +139,22 @@
 				let d_temps = grid.features.map((f) => f.properties.temps[day]);
 				return [Math.min(...d_temps), Math.max(...d_temps)];
 			}
+			console.log("done extent")
 		})()
 	);
 
 	let scale = $derived(
 		(() => {
+			console.log("Calculating extent")
 			return chroma.scale('Spectral').domain([extent[1], extent[0]]);
 		})()
 	);
 
 	var oa_ramp = $derived(
 		(() => {
-			console.log('OA_STATS', oa_stats);
+			console.log("Calculating ramp")
 			let households = oa_stats.map((o) => o.households);
 			let people = oa_stats.map((o) => o.people);
-			console.log('people ', people);
 
 			let vals = show_households ? households : people;
 
@@ -104,6 +177,7 @@
 				show_households ? ['feature-state', 'households'] : ['feature-state', 'people'],
 				...style_steps
 			];
+			console.log("Done Calculating ramp")
 			return ramp;
 		})()
 	);
@@ -120,6 +194,7 @@
 
 	let style = $derived(
 		(() => {
+			console.log("calculating style")
 			let steps = 4;
 			let style_steps = [];
 			let bin_width = (extent[1] - extent[0]) / steps;
@@ -136,28 +211,14 @@
 				show_max ? ['get', 'max'] : ['at', day, ['get', 'temps']],
 				...style_steps
 			];
-			console.log('ramp ', ramp);
 			return ramp;
 		})()
 	);
 </script>
 
+
 <div class="flex flex-row min-h-screen bg-gray-100 text-gray-800">
-	<aside
-		class="sidebar w-64 md:shadow transform -translate-x-full md:translate-x-0 transition-transform duration-150 ease-in bg-indigo-500"
-	>
-		{#if selected_cell}
-			<h2>{JSON.parse(selected_cell.properties.temps)[day]} / {selected_cell.properties.max}</h2>
-		{/if}
-
-		<input type="range" id="day" name="cowbell" min={0} max={timesteps} bind:value={day} step={1} />
-		<p>{date.toLocaleDateString()}</p>
-
-		<button type="button" on:click={() => (show_max = true)}>Max</button>
-		<button type="button" on:click={() => (show_max = false)}>Daily</button>
-		<button type="button" on:click={() => (show_households = true)}>Households</button>
-		<button type="button" on:click={() => (show_households = false)}>People</button>
-	</aside>
+	
 	<main
 		class="main relative flex flex-col flex-grow -ml-64 md:ml-0 transition-all duration-150 ease-in"
 	>
@@ -177,7 +238,7 @@
 
 				<FillLayer
 					paint={{ 'fill-color': oa_ramp, 'fill-opacity': 0.4 }}
-					on:mousemove={(e) => console.log(e.detail.features)}
+					on:mousemove={(e) => {}}
 				/>
 				<LineLayer
 					layout={{ 'line-cap': 'round', 'line-join': 'round' }}
@@ -204,9 +265,38 @@
 				/>
 			</GeoJSON>
 		</MapLibre>
-		<div class="absolute top-10 left-10 w-4 h-10 background-white">
-			<PopulationSelector class="absolute top-10 left-10 w-2" />
+
+		<div class="absolute flex flex-col top-10 right-10 z-2 gap-4 "> 
+			<Card.Root>
+				<Card.Header>
+					<h2>Temperature</h2>
+				</Card.Header>
+					<Card.Content >
+						{#if selected_cell}
+							<h2>{JSON.parse(selected_cell.properties.temps)[day]} / {selected_cell.properties.max}</h2>
+						{/if}
+						<div class='flex gap-2'>
+							<p>{date.toLocaleDateString()}</p>
+
+							<input disabled={show_max} type="range" id="day" name="cowbell" min={0} max={timesteps} bind:value={day} step={1} class="flex-grow" />
+							<Label>Daily / Max</Label><Switch bind:checked={show_max} />
+						</div>
+
+					</Card.Content>
+			</Card.Root>
+			<Card.Root>
+				<Card.Header>
+					<h2>Population</h2>
+				</Card.Header>
+					<Card.Content >
+						<PopulationSelector bind:selection_state={selection_state} />
+					</Card.Content>
+					<Card.Footer>
+					{filtered_households.length} out of {households.length}
+				</Card.Footer>
+			</Card.Root>
 		</div>
-		<div class="h-[300px] p-4 border rounded"></div>
+		<div class="absolute top-10 left-10 w-4 h-10 background-white">
+		</div>
 	</main>
 </div>
