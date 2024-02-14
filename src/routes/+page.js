@@ -1,13 +1,15 @@
 export const csr = true;
 import {NetCDFReader} from "@loaders.gl/netcdf"
 import proto,{synthpop} from "../pb/synthpop_pb.js";
+import booleanIntersects from "@turf/boolean-intersects"
+import {multiPolygon} from "@turf/helpers"
 
 function xyz_to_index(x,y,z,xSize,ySize,zSize){
 	return z + y * zSize + x * zSize * ySize
 }
 
 async function load_climate_prediction(fetch){
-	
+	console.time("loading_climate_predictions")
 	const res = await fetch(`/reprojected.nc`);
   let blob = await res.blob();
 
@@ -58,21 +60,61 @@ async function load_climate_prediction(fetch){
 		type:"FeatureCollection",
 		features:features
 	} 
-	return {array, grid, oas, global_trend,min,max,timesteps:times.length,times}
+	let {lookup,oa_maxes} = oas_to_grid(grid, oas);
+	console.timeEnd("loading_climate_predictions")
+	return {array, grid, oas, global_trend,min,max,timesteps:times.length,times, lookup, oa_maxes}
+}
+
+function oas_to_grid(grid, oas){
+	console.time("oas_to_grid")
+	let lookup = {}
+	let maxes = {}
+	for (const oa of oas.features){
+		for (let i =0 ; i < grid.features.length; i ++){
+			// let oa_m = oa.geometry.type ==="MultiPolygon" ? oa : multiPolygon([oa.geometry.coords])
+			// let grid_m = multiPolygon([grid.features[i].geometry.coords])
+			let grid_feature = grid.features[i]
+			if (booleanIntersects(grid_feature, oa)){
+				let oa_code =oa.properties.code 
+
+				if(maxes[oa_code]){
+					if(maxes[oa_code] > grid_feature.properties.max ){
+						maxes[oa_code] = grid_feature.properties.max
+					}
+				}
+				else{
+					maxes[oa_code] = grid_feature.properties.max
+				}
+
+				if(lookup[oa_code]){
+					lookup[oa_code].push(i)			
+				}
+				else{
+					lookup[oa_code] = [i]
+				}
+			}
+		}
+	}
+	console.timeEnd("oas_to_grid")
+	return {lookup, oa_maxes:maxes}
 }
 
 async function load_oas(fetch){
+	console.time("load_oas")
 	const res = await fetch('/glasgow.geojson')
 	let geo = await res.json()
+	console.timeEnd("load_oas")
 	return geo
 }
 
 async function load_population(fetch){
+	console.time("load_pop")
 	const res = await fetch(`/greater-glasgow.pb`);
   let blob = await res.blob();
 	let data = new Uint8Array(await blob.arrayBuffer());
 	
 	let population = synthpop.Population.decode(data)
+	console.timeEnd("load_pop")
 	return population
 }
 

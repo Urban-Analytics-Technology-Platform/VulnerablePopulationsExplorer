@@ -14,18 +14,26 @@
 	import { Chart, Svg, Axis, Spline } from 'layerchart';
   import { Label } from "$lib/components/ui/label";
 	import proto from '../pb/synthpop_pb.js';
+  import * as Table from "$lib/components/ui/table";
+	import TemperatureTrend from "../temperature_trend.svelte"
 
 	import { scaleTime } from 'd3-scale';
 	import { ticks } from 'd3-array';
 	import chroma from 'chroma-js';
+	import { Slider } from '$lib/components/ui/slider';
+	import RangeSelector from '../range_selector.svelte';
+	import Legend from "../legend.svelte"
+	import { Button } from '$lib/components/ui/button';
 
-	let show_households = $state(true);
+	let show_variable = $state("max");
 	let day = $state(10);
 	let show_max = $state(false);
 	let selected_cell = $state(null);
+	let show_temperature_overlay = $state(false)
+	let threshold_temp_range = $state([0,100])
 
 	let { data } = $props();
-	let { min, max, oas, grid, array, timesteps, times, global_trend } = data.prediction;
+	let { lookup, oa_maxes, min, max, oas, grid, array, timesteps, times, global_trend } = data.prediction;
 
 	let selection_state = $state({
 		house_types:["1","2","3","4"],
@@ -42,7 +50,6 @@
 		ethnicity:["1","2","3","4","5"],
 		sex:["1","2"],
 		self_assessed_health:["1","2","3","4","5"]
-	
 	})
 
 	let population = data.population;
@@ -51,9 +58,6 @@
 
 	function apply_filters(households, people, filters) {
 		let filtered_households = []
-		console.log("Filters ",filters)
-		console.log("Applying filters: houses ",filters.house_types, households[10])
-		console.log("household ", households[10])
 	  for (const house of households){
 				// if(!filters.house_types.includes(house.details.accommodationType.toString())){
 				// 	continue
@@ -70,9 +74,7 @@
 				filtered_households.push(house)
 		}
 
-		console.log("Applying filters: people")
 	  let filtered_pop = []
-		console.log("person ",people[10])
 
 		for (const person of people){
 
@@ -98,21 +100,22 @@
 			filtered_pop.push(person)
 
 		}
-		console.log("filtered ", filtered_households.length, filtered_pop.length)
 		return { filtered_pop, filtered_households };
 	}
 
-	function calc_oa_stats(pop, households) {
-		console.log("Calculating stats")
+	function calc_oa_stats(pop, households, oa_maxes) {
 		let oa_stats = {};
 	
 		let pop_ids = new Set(pop.map((p) => p.id));
+
 		households.forEach((h) => {
 			let oa_id = h.oa11cd;
 			let unfiltered_people = h.members.filter((id) => pop_ids.has(id)).length;
+
 			if (unfiltered_people === 0) {
 				return;
 			}
+
 			if (oa_stats[oa_id]) {
 				oa_stats[oa_id].people += unfiltered_people;
 				oa_stats[oa_id].households += 1;
@@ -120,18 +123,17 @@
 				oa_stats[oa_id] = { people: unfiltered_people, households: 1 };
 			}
 		});
-		console.log("Done Calculating stats")
-		return Object.entries(oa_stats).map(([key, counts]) => ({ oa11cd: key, ...counts }));
+		let result = Object.entries(oa_stats).map(([key, counts]) => ({ oa11cd: key, ...counts, max: oa_maxes[key]}));
+		return result
 	}
+
 
 	let { filtered_pop, filtered_households } = $derived(apply_filters(households, people, selection_state));
 
-	let oa_stats = $derived(calc_oa_stats(filtered_pop, filtered_households));
-
+	let oa_stats = $derived(calc_oa_stats(filtered_pop, filtered_households,oa_maxes));
 
 	let extent = $derived(
 		(() => {
-			console.log("Calculating extent")
 			if (show_max) {
 				let d_temps = grid.features.map((f) => f.properties.max);
 				return [Math.min(...d_temps), Math.max(...d_temps)];
@@ -139,46 +141,86 @@
 				let d_temps = grid.features.map((f) => f.properties.temps[day]);
 				return [Math.min(...d_temps), Math.max(...d_temps)];
 			}
-			console.log("done extent")
 		})()
 	);
 
 	let scale = $derived(
 		(() => {
-			console.log("Calculating extent")
 			return chroma.scale('Spectral').domain([extent[1], extent[0]]);
 		})()
 	);
 
-	var oa_ramp = $derived(
-		(() => {
-			console.log("Calculating ramp")
+	
+	let [oa_breaks,oa_colors] = $derived((()=>{
 			let households = oa_stats.map((o) => o.households);
 			let people = oa_stats.map((o) => o.people);
 
-			let vals = show_households ? households : people;
+			let vals =[]
+			let colors = chroma.brewer.OrRd
 
-			let extent = [Math.min(...vals), Math.max(...vals)];
+			if(show_variable==="people"){
+				console.log("GETTING PEOPLE STATS")
+				vals = oa_stats.map(oa=>oa.people)
+				colors = chroma.brewer.GnBu
+			}
 
-			let scale = chroma.scale(['yellow', '008ae5']).domain(extent);
+			if(show_variable==="households"){
+				vals = oa_stats.map(oa=>oa.households)
+				colors = chroma.brewer.PuRd
+			}
 
-			let style_steps = [];
+			if(show_variable==="max"){
+				vals = oa_stats.map(oa=>oa.max)
+				colors = chroma.brewer.OrRd
+			}
+
 			let steps = 5;
-			let step = (extent[1] - extent[0]) / steps;
-			for (let i = 0; i < step; i++) {
-				let val = extent[0] + i * step;
-				style_steps.push(val);
-				style_steps.push(scale(val).css());
+			
+			let breaks = vals.length===0 ? [] : chroma.limits(vals, 'q', steps )
+			return [breaks,colors]
+	})());
+
+	var oa_ramp = $derived(
+		(() => {
+
+			let scale = chroma.scale(oa_colors).domain(oa_breaks);
+			let style_steps = [];
+
+			if(oa_breaks.length===0){
+				return "rgb(0,0,0)"
+			}
+
+			for (let i = 0; i < oa_breaks.length; i++) {
+				style_steps.push(oa_breaks[i]);
+				style_steps.push(scale(oa_breaks[i]).css());
 			}
 
 			let ramp = [
 				'interpolate',
 				['linear'],
-				show_households ? ['feature-state', 'households'] : ['feature-state', 'people'],
+				 ['feature-state', show_variable],
 				...style_steps
 			];
-			console.log("Done Calculating ramp")
+			console.log("Done Calculating ramp, ",ramp)
 			return ramp;
+		})()
+	);
+
+
+	var oa_transparancy = $derived(
+		(()=>{
+			let style = 
+				["case", [ "==", ["typeof", ["feature-state","max"]], "number"],
+					["case",["all", 
+						[">", ["feature-state", "max"], threshold_temp_range[0] ],
+						["<", ["feature-state", "max"], threshold_temp_range[1] ]
+					],
+						0.7,
+						0.1
+					],
+				0.0
+				]
+			return style
 		})()
 	);
 
@@ -189,8 +231,31 @@
 	}
 
 	var date = $derived(calc_date(day));
+	let legend_suffix=$derived((()=>{
+			if(show_variable==="households"){
+				return "houses"
+			}
+			if(show_variable==="people"){
+				return "people"
+			}
+			if(show_variable==="max"){
+				return "°C"
+			}
+	})())
 
-	var graph_global = global_trend.map((val, index) => ({ val, date: index }));
+	var graph_global = $derived((() =>{
+			let x = global_trend.map((_,index)=> calc_date(index).toDateString() );
+			let y = global_trend
+			return {x,y}
+	})());
+
+	let at_risk_global  = $derived( (()=>{
+		let counts = {people:0,households:0}
+		let above_threshold = oa_stats.filter((oa)=>
+			oa.max >= threshold_temp_range[0] && oa.max <= threshold_temp_range[1]
+		).forEach( (oa)=>  {counts.people += oa.people; counts.households+=oa.households } )
+		return counts
+	})() )
 
 	let style = $derived(
 		(() => {
@@ -237,66 +302,118 @@
 				<JoinedData data={oa_stats} idCol="oa11cd" />
 
 				<FillLayer
-					paint={{ 'fill-color': oa_ramp, 'fill-opacity': 0.4 }}
+					paint={{ 'fill-color': oa_ramp, 'fill-opacity': oa_transparancy }}
 					on:mousemove={(e) => {}}
 				/>
 				<LineLayer
-					layout={{ 'line-cap': 'round', 'line-join': 'round' }}
-					paint={{ 'line-color': 'black', 'line-width': 0.5 }}
+					paint={{ 'line-color': 'grey', 'line-width': 0.5, "line-opacity":oa_transparancy}}
 				/>
 			</GeoJSON>
-			<GeoJSON id="states" data={grid}>
-				<FillLayer
-					paint={{
-						'fill-color': style,
-						'fill-opacity': 0.8
-					}}
-					on:mousemove={(e) => {
-						if (e.detail.features) {
-							selected_cell = e.detail.features?.[0];
-						} else {
-							selected_cell = null;
-						}
-					}}
-				/>
-				<LineLayer
-					layout={{ 'line-cap': 'round', 'line-join': 'round' }}
-					paint={{ 'line-color': 'black', 'line-width': 0.5 }}
-				/>
-			</GeoJSON>
+			{#if show_temperature_overlay}
+				<GeoJSON id="states" data={grid}>
+					<FillLayer
+						paint={{
+							'fill-color': style,
+							'fill-opacity': 0.8
+						}}
+						on:mousemove={(e) => {
+							if (e.detail.features) {
+								selected_cell = e.detail.features?.[0];
+							} else {
+								selected_cell = null;
+							}
+						}}
+					/>
+					<LineLayer
+						layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+						paint={{ 'line-color': 'black', 'line-width': 0.5 }}
+					/>
+				</GeoJSON>
+			{/if}
 		</MapLibre>
 
-		<div class="absolute flex flex-col top-10 right-10 z-2 gap-4 "> 
+		<div class="absolute flex flex-col bottom-10 left-[2vw] w-[96vw] z-2 gap-4 h-max-[400px]"> 
 			<Card.Root>
 				<Card.Header>
-					<h2>Temperature</h2>
+					<div class="flex flex-row justify-between items-center">
+						<h1>Temperature</h1>
+						<div class="flex flex-row gap-2 items-center">
+							<div class="flex flex-row gap-2 items-center">
+								<div class="flex flex-row gap-1 items-center">
+								<Label for="temp_min">Min Temp Threshold</Label><input class="w-2" type="number" bind:value={threshold_temp_range[0]} id="temp_min" />
+								</div>
+								<div class="flex flex-row gap-1 items-center">
+								<Label for="temp_max">Max Temp Threshold</Label>
+								<input type="number" bind:value={threshold_temp_range[1]} class="w-2" id="temp_max"/>
+								</div>
+							</div>
+							<div class="flex flex-row gap-1 items-center">
+								<Label>Daily / Max</Label><Switch bind:checked={show_max} />
+							</div>
+							<div class="flex flex-row gap-2 items-center">
+								<Label>Show climate prediction</Label><Switch bind:checked={show_temperature_overlay} />
+							</div>
+						</div>
+					</div>
 				</Card.Header>
 					<Card.Content >
-						{#if selected_cell}
-							<h2>{JSON.parse(selected_cell.properties.temps)[day]} / {selected_cell.properties.max}</h2>
-						{/if}
+						<TemperatureTrend global_series={graph_global} local_series={null} threshold={[0,0]}/>
 						<div class='flex gap-2'>
 							<p>{date.toLocaleDateString()}</p>
 
 							<input disabled={show_max} type="range" id="day" name="cowbell" min={0} max={timesteps} bind:value={day} step={1} class="flex-grow" />
-							<Label>Daily / Max</Label><Switch bind:checked={show_max} />
 						</div>
 
 					</Card.Content>
 			</Card.Root>
+			</div>
+		<div class="absolute flex flex-col top-10 right-10 z-2 gap-4 "> 
 			<Card.Root>
 				<Card.Header>
-					<h2>Population</h2>
+					<div class="flex flex-row justify-between items-center">
+						<h2>Population</h2>
+						<PopulationSelector bind:selection_state={selection_state} />
+					</div>
 				</Card.Header>
 					<Card.Content >
-						<PopulationSelector bind:selection_state={selection_state} />
+							
+						<Table.Root>
+						  <Table.Caption>Population Exposure</Table.Caption>
+						  <Table.Header>
+						    <Table.Row>
+						      <Table.Head class="w-[100px]"></Table.Head>
+						      <Table.Head class="w-[100px]">Total </Table.Head>
+						      <Table.Head>Vulnerable </Table.Head>
+						      <Table.Head>Exposed Vulnerable</Table.Head>
+						    </Table.Row>
+						  </Table.Header>
+						  <Table.Body>
+						    <Table.Row>
+						      <Table.Cell class="font-medium bold">Households</Table.Cell>
+						      <Table.Cell>{households.length.toLocaleString()}</Table.Cell>
+						      <Table.Cell>{filtered_households.length.toLocaleString()} ({(filtered_households.length*100/households.length).toLocaleString()} %)</Table.Cell>
+						      <Table.Cell >{at_risk_global.households.toLocaleString()}</Table.Cell>
+						    </Table.Row>
+						    <Table.Row>
+						      <Table.Cell class="font-medium bold">People</Table.Cell>
+						      <Table.Cell>{people.length.toLocaleString()}</Table.Cell>
+						      <Table.Cell>{filtered_pop.length.toLocaleString()} ({(filtered_pop.length*100/people.length).toLocaleString()} %)</Table.Cell>
+						      <Table.Cell >{at_risk_global.people.toLocaleString()}</Table.Cell>
+						    </Table.Row>
+						  </Table.Body>
+						</Table.Root>
+
+
+						<div class="flex flex-row gap-2">
+							<Button variant={show_variable==="people" ? "default" : "outline"}  on:click={()=>  show_variable = "people"}>People</Button>
+							<Button variant={show_variable==="households" ? "default" : "outline"} on:click={()=>  show_variable = "households"}>Households</Button>
+							<Button variant={show_variable==="max" ? "default" : "outline"} on:click={()=>  show_variable = "max"}>Max Temperature</Button> 
+						</div>
+						<Legend name={show_variable ==="max" ? "Max Temperature" : show_variable} colors={oa_colors} breaks={oa_breaks} suffix={legend_suffix}/>
 					</Card.Content>
 					<Card.Footer>
-					{filtered_households.length} out of {households.length}
 				</Card.Footer>
 			</Card.Root>
-		</div>
-		<div class="absolute top-10 left-10 w-4 h-10 background-white">
 		</div>
 	</main>
 </div>

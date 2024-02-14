@@ -21,7 +21,7 @@
 </script>
 
 <ToggleGroupPrimitive.Root
-	class={cn("flex items-center justify-center gap-1", className)}
+	class={cn("flex items-center justify-center gap-1 flex-wrap", className)}
 	bind:value
 	{...$$restProps}
 	let:builder
